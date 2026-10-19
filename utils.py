@@ -130,23 +130,36 @@ def load_data(
     # Combine primary raster data with DEM arrays
     merged_dataset = xr.merge([data, data_dem], compat="override")
 
-    # =========================================================================
+  # =========================================================================
     # Sentinel-1 Radar Integration & Textures
     # =========================================================================
     print(f"Searching for Sentinel-1 radar data...")
     
-    # 1. Fetch ALL radar assets without letting the server handle the date string
+    # 1. Fetch ALL radar assets for the bounding box
     all_s1_items = list(
         dep_client.search(
-            collections=["dep_s1_mosaic"], bbox=bbox
+            collections=["dep_s1_geomad"], bbox=bbox
         ).items()
     )
     
-    # 2. Filter locally by checking if the year string is in the Item ID
-    items_s1 = [item for item in all_s1_items if str(year) in item.id]
+    print(f"Total S1 items returned for bbox: {len(all_s1_items)}")
     
+    # 2. Inspect structure if items exist
+    if all_s1_items:
+        print("Sample Item ID:", all_s1_items[0].id)
+        print("Sample Item Properties:", all_s1_items[0].properties)
+
+    # 3. Filter safely using ID or datetime properties
+    items_s1 = []
+    for item in all_s1_items:
+        item_date = item.properties.get("datetime") or item.properties.get("start_datetime", "")
+        if str(year) in item.id or str(year) in str(item_date):
+            items_s1.append(item)
+            
+    print(f"-> Successfully found and filtered {len(items_s1)} radar tiles for {year}...")
+    
+    # 4. Load, compute features, and merge if tiles match the year
     if items_s1:
-        print(f"-> Successfully found and loading {len(items_s1)} radar tiles for {year}...")
         data_s1 = load(
             items_s1,
             like=data,
@@ -154,20 +167,19 @@ def load_data(
             measurements=["mean_vv", "mean_vh"],
         ).squeeze("time")
 
+        # Compute to materialize lazy dask chunks
+        data_s1 = data_s1.compute()
+
         # Ratios and variance features
         data_s1["mean_vv_vh"] = (data_s1["mean_vv"]) / (data_s1["mean_vh"])
-        data_s1["vv_std_3x3"] = data_s1["mean_vv"].rolling(x=3, y=3, center=True).std()
-        data_s1["vh_std_3x3"] = data_s1["mean_vh"].rolling(x=3, y=3, center=True).std()
         
         # Merge safely into the master stack overriding conflicting time flags
         merged_dataset = xr.merge([merged_dataset, data_s1], compat="override")
+        print("Successfully merged Sentinel-1 data into master dataset.")
     else:
         print(f"No Sentinel-1 radar composites for {year} in this bounding box.")
         
     return merged_dataset
-
-
-
 def predict_xr(
     model, input_xr, chunk_size=None, persist=False, proba=False, clean=False
 ):
