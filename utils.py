@@ -9,6 +9,7 @@ from datacube.utils.geometry import assign_crs
 from odc.stac import load
 from pystac_client import Client
 from planetary_computer import sign_url
+import rioxarray
 
 DEP_CATALOG = "https://stac.digitalearthpacific.org"
 MSPC_CATALOG = "https://planetarycomputer.microsoft.com/api/stac/v1/"
