@@ -168,9 +168,6 @@ def load_data(
 
 
 def predict_xr(model, input_xr, chunk_size=None, persist=False, proba=False, clean=False):
-    """
-    Predict using a scikit-learn model on an xarray dataset.
-    """
     if not bool(input_xr.chunks):
         input_xr = input_xr.chunk({"x": len(input_xr.x), "y": len(input_xr.y)})
 
@@ -188,12 +185,12 @@ def predict_xr(model, input_xr, chunk_size=None, persist=False, proba=False, cle
         for arr in input_data:
             flat.append(arr.data.flatten().rechunk(chunk_size))
 
-        features = da.stack(flat, axis=1)  # shape: (n_pixels, n_features)
+        features = da.stack(flat, axis=1)
 
         if clean:
             features = da.where(da.isfinite(features), features, 0)
 
-        if (proba is True) and (persist is True):
+        if proba and persist:
             features = features.persist()
 
         print("predicting...")
@@ -206,10 +203,10 @@ def predict_xr(model, input_xr, chunk_size=None, persist=False, proba=False, cle
         output_xr = xr.DataArray(
             out_class,
             coords={"x": x, "y": y},
-            dims=["y", "x"],
+            dims=["y", "x"]
         ).to_dataset(name="predictions")
 
-        if proba is True:
+        if proba:
             print("   probabilities...")
             out_proba = model.predict_proba(features)
             out_proba = da.max(out_proba, axis=1) * 100.0
@@ -221,16 +218,20 @@ def predict_xr(model, input_xr, chunk_size=None, persist=False, proba=False, cle
             output_xr["probabilities"] = xr.DataArray(
                 out_proba,
                 coords={"x": x, "y": y},
-                dims=["y", "x"],
+                dims=["y", "x"]
             )
 
         return assign_crs(output_xr, str(crs))
 
-    if input_xr.chunks:
+    try:
+        # this will work if a Dask client exists in the notebook
+        from dask.distributed import Client
+        Client.current()
         model = ParallelPostFit(model)
         with joblib.parallel_backend("dask"):
             output_xr = _predict_func(model, input_xr, persist, proba, clean)
-    else:
+    except Exception:
+        # fall back to plain local execution
         output_xr = _predict_func(model, input_xr, persist, proba, clean).compute()
 
     return output_xr
