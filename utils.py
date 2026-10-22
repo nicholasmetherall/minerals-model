@@ -157,7 +157,7 @@ def load_data(
 
     # 6) Merge all feature layers
     merged = xr.merge([data, data_dem, data_s1], compat="override")
-
+    # merged = xr.merge([data, data_dem], compat="override")
     # Keep only pixels where every band is finite - too aggressive
     valid_mask = xr.concat(
         [merged[var].notnull() for var in merged.data_vars], dim="var"
