@@ -23,4 +23,8 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["jupyterlab>=4.6,<5"]
+dev = [
+    "jupyterlab>=4.6,<5",
+    "prek>=0.5.7",
+    "ruff>=0.17.2",
+]

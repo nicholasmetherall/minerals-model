@@ -9,7 +9,10 @@ Requires [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 ```bash
 uv sync              # create .venv and install deps from uv.lock
+uv run prek install  # enable pre-commit hooks (ruff lint + format)
 uv run jupyter lab   # then open 1-ml-learning.ipynb, then 2-prediction.ipynb
 ```
 
 Add a dependency with `uv add <package>` and commit both `pyproject.toml` and `uv.lock`.
+
+Commits run [ruff](https://docs.astral.sh/ruff/) lint and format via [prek](https://github.com/j178/prek) (`.pre-commit-config.yaml`). Or use `make lint`, `make format`, `make check` (all hooks on all files).
