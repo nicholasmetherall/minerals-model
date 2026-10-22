@@ -9,6 +9,7 @@ Requires [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 ```bash
 uv sync              # create .venv and install deps from uv.lock
+source .venv/bin/activate
 uv run prek install  # enable pre-commit hooks (ruff lint + format)
 uv run jupyter lab   # then open 1-ml-learning.ipynb, then 2-prediction.ipynb
 ```

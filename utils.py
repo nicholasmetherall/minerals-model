@@ -11,10 +11,11 @@ from odc.stac import load
 from planetary_computer import sign_url
 from pystac_client import Client
 
-DEP_CATALOG = "https://stac.digitalearthpacific.org"
+DEP_CATALOG = "https://stac.digitalearthpacific.org"  # Staging or prod?
 MSPC_CATALOG = "https://planetarycomputer.microsoft.com/api/stac/v1/"
 
 
+# TODO: Why is this needed?
 def safe_divide(num, den, eps=1e-6):
     return xr.where(abs(den) > eps, num / den, 0.0)
 
@@ -96,7 +97,9 @@ def load_data(
     )
 
     # 3) DEM from Planetary Computer
-    os.environ["PC_SDK_SUBSCRIPTION_KEY"] = "84162f5502174b1b838239e74a44898d"
+    os.environ["PC_SDK_SUBSCRIPTION_KEY"] = (
+        "84162f5502174b1b838239e74a44898d"  # TODO: is this sensitive? Move to config or secret
+    )
     mspc_client = Client.open(MSPC_CATALOG)
 
     items_dem = list(
@@ -114,6 +117,7 @@ def load_data(
     )
 
     data_dem = (
+        # TODO: What is this value?
         data_dem.where(data_dem != -32768).rename({"data": "elevation"}).squeeze("time")
     )
 
@@ -254,6 +258,7 @@ def predict_xr(
 
         return assign_crs(output_xr, str(crs))
 
+    # TODO: try/except overkill
     try:
         # this will work if a Dask client exists in the notebook
         from dask.distributed import Client
