@@ -5,7 +5,7 @@ import joblib
 import numpy as np
 import xarray as xr
 from dask_ml.wrappers import ParallelPostFit
-from datacube.utils.geometry import assign_crs
+from odc.geo.xr import assign_crs
 from odc.stac import load
 from pystac_client import Client
 from planetary_computer import sign_url
