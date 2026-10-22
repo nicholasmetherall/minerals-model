@@ -1,0 +1,26 @@
+[project]
+name = "minerals-model"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "dask[distributed]",
+    "dask-ml",
+    "geopandas",
+    "joblib",
+    "matplotlib",
+    "numpy",
+    "odc-geo",
+    "odc-stac",
+    "pandas",
+    "planetary-computer",
+    "pystac",
+    "pystac-client",
+    "rasterio",
+    "rioxarray",
+    "scikit-learn",
+    "shapely",
+    "xarray",
+]
+
+[dependency-groups]
+dev = ["jupyterlab"]
