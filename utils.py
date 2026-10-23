@@ -1,6 +1,7 @@
 import os
 
 import dask.array as da
+import geopandas as gpd
 import joblib
 import numpy as np
 import rioxarray  # noqa: F401
@@ -10,9 +11,17 @@ from odc.geo.xr import assign_crs
 from odc.stac import load
 from planetary_computer import sign_url
 from pystac_client import Client
+from shapely import geometry
 
 DEP_CATALOG = "https://stac.digitalearthpacific.org"  # Staging or prod?
 MSPC_CATALOG = "https://planetarycomputer.microsoft.com/api/stac/v1/"
+
+CHUNKS = {"x": 2048, "y": 2048}
+DATETIME = "2022"
+# BBOX = [177.14, -18.41, 179.99, -16.0]  # Fiji
+BBOX = [178.1, -17.8, 178.3, -17.6]  # Subset of Fiji for dev
+BBOX_GEOMETRY = geometry.box(*BBOX)
+BBOX_GDF = gpd.GeoDataFrame({"geometry": [BBOX_GEOMETRY]}, crs="EPSG:4326")
 
 
 # TODO: Why is this needed?
