@@ -23,7 +23,6 @@ def safe_divide(num, den, eps=1e-6):
 def load_data(
     bbox: tuple[float, float, float, float],
     chunks: dict | None = None,
-    resolution: int = 10,
     year: str = "2022",
 ) -> xr.Dataset:
     if chunks is None:
@@ -64,7 +63,6 @@ def load_data(
         items,
         bbox=bbox,
         measurements=bands,
-        resolution=resolution,
         chunks=chunks,
     ).squeeze("time")
 
@@ -129,7 +127,9 @@ def load_data(
     elevation = data_dem["elevation"].where(np.isfinite(data_dem["elevation"]), np.nan)
     elevation_metric = elevation.rio.write_crs(
         data_dem["elevation"].rio.crs
-    ).rio.reproject("EPSG:32760", resolution=30)
+    ).rio.reproject(
+        "EPSG:32760", resolution=30
+    )  # TODO: Be very careful reprojecting and resampling. Instead load "like" geomad
     elevation_metric = elevation_metric.where(np.isfinite(elevation_metric), np.nan)
 
     dy_grad, dx_grad = np.gradient(elevation_metric.values, 30.0, 30.0)
