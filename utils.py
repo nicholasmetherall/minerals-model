@@ -14,6 +14,9 @@ from pystac_client import Client
 from shapely import geometry
 
 DEP_CATALOG = "https://stac.digitalearthpacific.org"  # Staging or prod?
+S2_COLLECTION = "dep_s2_geomad"
+S1_COLLECTION = "dep_s1_geomad"
+DEM_COLLECTION = "cop-dem-glo-30"
 MSPC_CATALOG = "https://planetarycomputer.microsoft.com/api/stac/v1/"
 
 CHUNKS = {"x": 2048, "y": 2048}
@@ -52,16 +55,15 @@ def load_data(
     if chunks is None:
         chunks = CHUNKS
     dep_client = Client.open(DEP_CATALOG)
-    collection = "dep_s2_geomad"
 
     # Search for DEP Sentinel-2 geomad items matching the given bbox and year
     items = dep_client.search(
-        collections=[collection], bbox=bbox, datetime=str(year)
+        collections=[S2_COLLECTION], bbox=bbox, datetime=str(year)
     ).items()
 
     if not items:
         raise ValueError(
-            f"No Sentinel-2 assets found for year={year}, datetime={DATETIME}, in bbox={bbox}"
+            f"No Sentinel-2 assets found for year={year}, datetime={DATETIME}, in bbox={bbox} for {S2_COLLECTION} from {DEP_CATALOG}"
         )
 
     data = load(
@@ -106,7 +108,7 @@ def load_data(
     mspc_client = Client.open(MSPC_CATALOG)
 
     items_dem = list(
-        mspc_client.search(collections=["cop-dem-glo-30"], bbox=bbox).items()
+        mspc_client.search(collections=[DEM_COLLECTION], bbox=bbox).items()
     )
     if not items_dem:
         raise ValueError(f"No DEM items found for bbox={bbox}")
@@ -174,7 +176,7 @@ def load_data(
 
     # 5) Sentinel-1 radar
     items_s1 = []
-    for item in dep_client.search(collections=["dep_s1_geomad"], bbox=bbox).items():
+    for item in dep_client.search(collections=[S1_COLLECTION], bbox=bbox).items():
         dt = (
             item.properties.get("datetime")
             or item.properties.get("start_datetime")
