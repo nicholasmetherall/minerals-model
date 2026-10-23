@@ -55,7 +55,7 @@ def safe_divide(num, den):
     return out.where(np.isfinite(out))
 
 
-def add_indices(data: xr.Dataset) -> xr.Dataset:
+def add_indices(ds: xr.Dataset) -> xr.Dataset:
     """Add spectral indices to a DEP Sentinel-2 geomad dataset, in place.
 
     Input bands as loaded by ``odc.stac.load`` from ``dep_s2_geomad``:
@@ -75,42 +75,36 @@ def add_indices(data: xr.Dataset) -> xr.Dataset:
     Returns the same dataset with indices added as new variables.
     """
     # Normalised Difference Vegetation Index
-    data["ndvi"] = safe_divide(data["nir"] - data["red"], data["nir"] + data["red"])
+    ds["ndvi"] = safe_divide(ds["nir"] - ds["red"], ds["nir"] + ds["red"])
     # Modified Normalised Difference Water Index (standard uses swir16, not swir22)
-    data["mndwi"] = safe_divide(
-        data["green"] - data["swir22"], data["green"] + data["swir22"]
-    )
+    ds["mndwi"] = safe_divide(ds["green"] - ds["swir22"], ds["green"] + ds["swir22"])
     # Enhanced Vegetation Index
-    data["evi"] = safe_divide(
-        2.5 * (data["nir"] - data["red"]),
-        data["nir"] + 6 * data["red"] - 7.5 * data["blue"] + 1.0,
+    ds["evi"] = safe_divide(
+        2.5 * (ds["nir"] - ds["red"]),
+        ds["nir"] + 6 * ds["red"] - 7.5 * ds["blue"] + 1.0,
     )
     # Soil Adjusted Vegetation Index (L = 0.5)
-    data["savi"] = safe_divide(
-        (1 + 0.5) * (data["nir"] - data["red"]),
-        data["nir"] + data["red"] + 0.5,
+    ds["savi"] = safe_divide(
+        (1 + 0.5) * (ds["nir"] - ds["red"]),
+        ds["nir"] + ds["red"] + 0.5,
     )
     # Bare Soil Index
-    data["bsi"] = safe_divide(
-        (data["swir16"] + data["red"]) - (data["nir"] + data["blue"]),
-        (data["swir16"] + data["red"]) + (data["nir"] + data["blue"]),
+    ds["bsi"] = safe_divide(
+        (ds["swir16"] + ds["red"]) - (ds["nir"] + ds["blue"]),
+        (ds["swir16"] + ds["red"]) + (ds["nir"] + ds["blue"]),
     )
     # Normalised Difference Moisture Index
-    data["ndmi"] = safe_divide(
-        data["nir"] - data["swir16"], data["nir"] + data["swir16"]
-    )
+    ds["ndmi"] = safe_divide(ds["nir"] - ds["swir16"], ds["nir"] + ds["swir16"])
     # Labelled Normalised Difference Built-up Index, but computed from red-edge
     # bands; true NDBI is (swir16 - nir) / (swir16 + nir), which equals -NDMI
-    data["ndbi"] = safe_divide(
-        data["rededge2"] - data["rededge1"], data["rededge2"] + data["rededge1"]
+    ds["ndbi"] = safe_divide(
+        ds["rededge2"] - ds["rededge1"], ds["rededge2"] + ds["rededge1"]
     )
     # Normalised Difference Water Index (McFeeters)
-    data["ndwi"] = safe_divide(data["green"] - data["nir"], data["green"] + data["nir"])
+    ds["ndwi"] = safe_divide(ds["green"] - ds["nir"], ds["green"] + ds["nir"])
     # Normalised Difference Red Edge index
-    data["ndre"] = safe_divide(
-        data["nir"] - data["rededge1"], data["nir"] + data["rededge1"]
-    )
-    return data
+    ds["ndre"] = safe_divide(ds["nir"] - ds["rededge1"], ds["nir"] + ds["rededge1"])
+    return ds
 
 
 # TODO: Search/load will break over the antimeridian. We are only doing one side of it for now
@@ -126,26 +120,26 @@ def load_data(
     dep_client = Client.open(DEP_CATALOG)
 
     # Search for DEP Sentinel-2 geomad items matching the given bbox, datetime, and year
-    items = list(
+    items_s2 = list(
         dep_client.search(
             collections=[S2_COLLECTION], bbox=bbox, datetime=str(year)
         ).items()
     )
 
-    if not items:
+    if not items_s2:
         raise ValueError(
             f"No Sentinel-2 assets found for year={year}, in bbox={bbox} for {S2_COLLECTION} from {DEP_CATALOG}"
         )
-    print(f"Found Sentinel-2 items: {len(items)}")
+    print(f"Found Sentinel-2 items: {len(items_s2)}")
 
-    data = load(
-        items,
+    data_s2 = load(
+        items_s2,
         bbox=bbox,
         bands=S2_BANDS,
         chunks=chunks,
     ).squeeze("time")
 
-    data = add_indices(data)
+    data_s2 = add_indices(data_s2)
 
     # DEM from Planetary Computer - align to geomad grid
     mspc_client = Client.open(MSPC_CATALOG)
@@ -161,7 +155,7 @@ def load_data(
         load(
             items_dem,
             chunks=chunks,
-            like=data,
+            like=data_s2,
             resampling="nearest",
             patch_url=sign_url,
         )
@@ -172,7 +166,7 @@ def load_data(
     # Horn's method: Sobel / 8.
     # Rows run north -> south. Aspect is the downslope compass bearing
     # (0 = N, 90 = E); it is 0 on flat ground, where slope is 0.
-    res = data.odc.geobox.resolution
+    res = data_s2.odc.geobox.resolution
     z = data_dem["elevation"].values
     dz_dx = sobel(z, axis=1) / (8 * abs(res.x))
     dz_drow = sobel(z, axis=0) / (8 * abs(res.y))
@@ -185,38 +179,31 @@ def load_data(
     )
 
     # Sentinel-1 radar
-    items_s1 = []
-    for item in dep_client.search(collections=[S1_COLLECTION], bbox=bbox).items():
-        dt = (
-            item.properties.get("datetime")
-            or item.properties.get("start_datetime")
-            or ""
-        )
-        if str(year) in item.id or str(year) in str(dt):
-            items_s1.append(item)
+    items_s1 = list(
+        dep_client.search(
+            collections=[S1_COLLECTION], bbox=bbox, datetime=str(year)
+        ).items()
+    )
 
-    if items_s1:
-        data_s1 = load(
-            items_s1,
-            like=data,
-            chunks=chunks,
-            bands=S1_BANDS,
-        ).squeeze("time")
-        data_s1["mean_vv_vh"] = safe_divide(data_s1["mean_vv"], data_s1["mean_vh"])
-        data_s1 = data_s1.rio.write_crs(data.rio.crs)
-        data_s1 = data_s1.rio.reproject_match(data)
-    else:
-        data_s1 = xr.Dataset()
+    if not items_s1:
+        raise ValueError(f"No Sentinel-1 items found for bbox={bbox}, year={year}")
+    print(f"Found Sentinel-1 items: {len(items_s1)}")
+
+    data_s1 = load(
+        items_s1,
+        like=data_s2,
+        chunks=chunks,
+        bands=S1_BANDS,
+    ).squeeze("time")
+    data_s1["mean_vv_vh"] = safe_divide(data_s1["mean_vv"], data_s1["mean_vh"])
 
     # Merge all feature layers
-    merged = xr.merge([data, data_dem, data_s1], compat="override")
-    # merged = xr.merge([data, data_dem], compat="override")
+    merged = xr.merge([data_s2, data_dem, data_s1], compat="override")
     # Keep only pixels where every band is finite - too aggressive
-    valid_mask = xr.concat(
-        [merged[var].notnull() for var in merged.data_vars], dim="var"
-    ).all("var")
-
-    merged = merged.where(valid_mask)
+    # valid_mask = xr.concat(
+    #     [merged[var].notnull() for var in merged.data_vars], dim="var"
+    # ).all("var")
+    # merged = merged.where(valid_mask)
 
     return merged
 
