@@ -42,21 +42,86 @@ S2_BANDS = [
 ]
 
 
-# TODO: Why is this needed?
-def safe_divide(num, den, eps=1e-6):
-    return xr.where(abs(den) > eps, num / den, 0.0)
+def safe_divide(num, den):
+    """Return ``num / den`` as float, ``NaN`` where ``den`` is 0 or the result is not finite.
+
+    ``NaN`` (not 0) so invalid pixels are dropped by ``load_data``'s ``notnull`` mask.
+    """
+    out = num / den.where(den != 0)  # NaN denominator: no divide-by-zero warning
+    return out.where(np.isfinite(out))
 
 
+def add_indices(data: xr.Dataset) -> xr.Dataset:
+    """Add spectral indices to a DEP Sentinel-2 geomad dataset, in place.
+
+    Input bands as loaded by ``odc.stac.load`` from ``dep_s2_geomad``:
+
+    - blue, green, red, rededge1-3, nir, swir16, swir22: ``uint16`` surface
+      reflectance scaled by 10,000 (scale 0.0001, offset 0); nodata is ``0``.
+    - emad, smad, bcmad: ``float32``; nodata is ``NaN``. Not used here.
+
+    Indices are computed on the raw scaled ``uint16`` values, not reflectance:
+
+    - TODO: Differences wrap around where the second band is larger (e.g.
+      ``nir - red`` over water gives ~65,535 instead of a small negative).
+    - EVI and SAVI constants (L, C1, C2) assume 0-1 reflectance.
+    - Nodata pixels (all bands ``0``) give ``0 / 0``, which ``safe_divide``
+      returns as ``NaN``.
+
+    Returns the same dataset with indices added as new variables.
+    """
+    # Normalised Difference Vegetation Index
+    data["ndvi"] = safe_divide(data["nir"] - data["red"], data["nir"] + data["red"])
+    # Modified Normalised Difference Water Index (standard uses swir16, not swir22)
+    data["mndwi"] = safe_divide(
+        data["green"] - data["swir22"], data["green"] + data["swir22"]
+    )
+    # Enhanced Vegetation Index
+    data["evi"] = safe_divide(
+        2.5 * (data["nir"] - data["red"]),
+        data["nir"] + 6 * data["red"] - 7.5 * data["blue"] + 1.0,
+    )
+    # Soil Adjusted Vegetation Index (L = 0.5)
+    data["savi"] = safe_divide(
+        (1 + 0.5) * (data["nir"] - data["red"]),
+        data["nir"] + data["red"] + 0.5,
+    )
+    # Bare Soil Index
+    data["bsi"] = safe_divide(
+        (data["swir16"] + data["red"]) - (data["nir"] + data["blue"]),
+        (data["swir16"] + data["red"]) + (data["nir"] + data["blue"]),
+    )
+    # Normalised Difference Moisture Index
+    data["ndmi"] = safe_divide(
+        data["nir"] - data["swir16"], data["nir"] + data["swir16"]
+    )
+    # Labelled Normalised Difference Built-up Index, but computed from red-edge
+    # bands; true NDBI is (swir16 - nir) / (swir16 + nir), which equals -NDMI
+    data["ndbi"] = safe_divide(
+        data["rededge2"] - data["rededge1"], data["rededge2"] + data["rededge1"]
+    )
+    # Normalised Difference Water Index (McFeeters)
+    data["ndwi"] = safe_divide(data["green"] - data["nir"], data["green"] + data["nir"])
+    # Normalised Difference Red Edge index
+    data["ndre"] = safe_divide(
+        data["nir"] - data["rededge1"], data["nir"] + data["rededge1"]
+    )
+    return data
+
+
+# TODO: Search/load will break over the antimeridian. We are only doing one side of it for now
 def load_data(
     bbox: tuple[float, float, float, float],
     chunks: dict | None = None,
     year: str = "2022",
 ) -> xr.Dataset:
+
     if chunks is None:
         chunks = CHUNKS
+
     dep_client = Client.open(DEP_CATALOG)
 
-    # Search for DEP Sentinel-2 geomad items matching the given bbox and year
+    # Search for DEP Sentinel-2 geomad items matching the given bbox, datetime, and year
     items = dep_client.search(
         collections=[S2_COLLECTION], bbox=bbox, datetime=str(year)
     ).items()
@@ -69,39 +134,13 @@ def load_data(
     data = load(
         items,
         bbox=bbox,
-        measurements=S2_BANDS,
+        bands=S2_BANDS,
         chunks=chunks,
     ).squeeze("time")
 
-    # 2) Spectral indices with safe division
-    data["ndvi"] = safe_divide(data["nir"] - data["red"], data["nir"] + data["red"])
-    data["mndwi"] = safe_divide(
-        data["green"] - data["swir22"], data["green"] + data["swir22"]
-    )
-    data["evi"] = safe_divide(
-        2.5 * (data["nir"] - data["red"]),
-        data["nir"] + 6 * data["red"] - 7.5 * data["blue"] + 1.0,
-    )
-    data["savi"] = safe_divide(
-        (1 + 0.5) * (data["nir"] - data["red"]),
-        data["nir"] + data["red"] + 0.5,
-    )
-    data["bsi"] = safe_divide(
-        (data["swir16"] + data["red"]) - (data["nir"] + data["blue"]),
-        (data["swir16"] + data["red"]) + (data["nir"] + data["blue"]),
-    )
-    data["ndmi"] = safe_divide(
-        data["nir"] - data["swir16"], data["nir"] + data["swir16"]
-    )
-    data["ndbi"] = safe_divide(
-        data["rededge2"] - data["rededge1"], data["rededge2"] + data["rededge1"]
-    )
-    data["ndwi"] = safe_divide(data["green"] - data["nir"], data["green"] + data["nir"])
-    data["ndre"] = safe_divide(
-        data["nir"] - data["rededge1"], data["nir"] + data["rededge1"]
-    )
+    data = add_indices(data)
 
-    # 3) DEM from Planetary Computer
+    # DEM from Planetary Computer
     os.environ["PC_SDK_SUBSCRIPTION_KEY"] = (
         "84162f5502174b1b838239e74a44898d"  # TODO: is this sensitive? Move to config or secret
     )
@@ -130,7 +169,7 @@ def load_data(
     data_dem = data_dem.rio.write_crs(data.rio.crs)
     data_dem = data_dem.rio.reproject_match(data)
 
-    # 4) DEM terrain metrics
+    # DEM terrain metrics
     elevation = data_dem["elevation"].where(np.isfinite(data_dem["elevation"]), np.nan)
     elevation_metric = elevation.rio.write_crs(
         data_dem["elevation"].rio.crs
@@ -174,7 +213,7 @@ def load_data(
         data_dem["elevation"].rolling(x=3, y=3, center=True).std()
     )
 
-    # 5) Sentinel-1 radar
+    # Sentinel-1 radar
     items_s1 = []
     for item in dep_client.search(collections=[S1_COLLECTION], bbox=bbox).items():
         dt = (
@@ -190,7 +229,7 @@ def load_data(
             items_s1,
             like=data,
             chunks=chunks,
-            measurements=["mean_vv", "mean_vh"],
+            bands=["mean_vv", "mean_vh"],
         ).squeeze("time")
         data_s1["mean_vv_vh"] = safe_divide(data_s1["mean_vv"], data_s1["mean_vh"])
         data_s1 = data_s1.rio.write_crs(data.rio.crs)
@@ -198,7 +237,7 @@ def load_data(
     else:
         data_s1 = xr.Dataset()
 
-    # 6) Merge all feature layers
+    # Merge all feature layers
     merged = xr.merge([data, data_dem, data_s1], compat="override")
     # merged = xr.merge([data, data_dem], compat="override")
     # Keep only pixels where every band is finite - too aggressive
