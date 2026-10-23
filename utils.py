@@ -9,6 +9,7 @@ from odc.geo.xr import assign_crs
 from odc.stac import load
 from planetary_computer import sign_url
 from pystac_client import Client
+from scipy.ndimage import sobel
 from shapely import geometry
 
 DEP_CATALOG = "https://stac.digitalearthpacific.org"  # Staging or prod?
@@ -37,6 +38,11 @@ S2_BANDS = [
     "emad",
     "bcmad",
     "smad",
+]
+
+S1_BANDS = [
+    "mean_vv",
+    "mean_vh",
 ]
 
 
@@ -120,14 +126,17 @@ def load_data(
     dep_client = Client.open(DEP_CATALOG)
 
     # Search for DEP Sentinel-2 geomad items matching the given bbox, datetime, and year
-    items = dep_client.search(
-        collections=[S2_COLLECTION], bbox=bbox, datetime=str(year)
-    ).items()
+    items = list(
+        dep_client.search(
+            collections=[S2_COLLECTION], bbox=bbox, datetime=str(year)
+        ).items()
+    )
 
     if not items:
         raise ValueError(
             f"No Sentinel-2 assets found for year={year}, in bbox={bbox} for {S2_COLLECTION} from {DEP_CATALOG}"
         )
+    print(f"Found Sentinel-2 items: {len(items)}")
 
     data = load(
         items,
@@ -138,7 +147,7 @@ def load_data(
 
     data = add_indices(data)
 
-    # DEM from Planetary Computer
+    # DEM from Planetary Computer - align to geomad grid
     mspc_client = Client.open(MSPC_CATALOG)
 
     items_dem = list(
@@ -146,66 +155,33 @@ def load_data(
     )
     if not items_dem:
         raise ValueError(f"No DEM items found for bbox={bbox}")
-
-    data_dem = load(
-        items_dem,
-        chunks=chunks,
-        like=data,
-        groupby="solar_day",
-        patch_url=sign_url,
-    )
+    print(f"Found DEM items: {len(items_dem)}")
 
     data_dem = (
-        # TODO: What is this value?
-        data_dem.where(data_dem != -32768).rename({"data": "elevation"}).squeeze("time")
+        load(
+            items_dem,
+            chunks=chunks,
+            like=data,
+            resampling="nearest",
+            patch_url=sign_url,
+        )
+        .squeeze("time")
+        .rename({"data": "elevation"})
     )
 
-    # Ensure CRS exists and align to the main data grid
-    data_dem = data_dem.rio.write_crs(data.rio.crs)
-    data_dem = data_dem.rio.reproject_match(data)
-
-    # DEM terrain metrics
-    elevation = data_dem["elevation"].where(np.isfinite(data_dem["elevation"]), np.nan)
-    elevation_metric = elevation.rio.write_crs(
-        data_dem["elevation"].rio.crs
-    ).rio.reproject(
-        "EPSG:32760", resolution=30
-    )  # TODO: Be very careful reprojecting and resampling. Instead load "like" geomad
-    elevation_metric = elevation_metric.where(np.isfinite(elevation_metric), np.nan)
-
-    dy_grad, dx_grad = np.gradient(elevation_metric.values, 30.0, 30.0)
-
-    slope_degrees = np.degrees(np.arctan(np.sqrt(dx_grad**2 + dy_grad**2)))
-    aspect_degrees = (270.0 - np.degrees(np.arctan2(dy_grad, -dx_grad))) % 360.0
-
-    slope_xr = xr.DataArray(
-        slope_degrees,
-        coords=elevation_metric.coords,
-        dims=elevation_metric.dims,
-    ).rio.write_crs("EPSG:32760")
-
-    aspect_xr = xr.DataArray(
-        aspect_degrees,
-        coords=elevation_metric.coords,
-        dims=elevation_metric.dims,
-    ).rio.write_crs("EPSG:32760")
-
-    target_crs = data_dem["elevation"].rio.crs
-    target_shape = (data_dem["elevation"].shape[-2], data_dem["elevation"].shape[-1])
-    target_transform = data_dem["elevation"].rio.transform()
-
-    data_dem["slope"] = slope_xr.rio.reproject(
-        dst_crs=target_crs,
-        shape=target_shape,
-        transform=target_transform,
-    )
-    data_dem["aspect"] = aspect_xr.rio.reproject(
-        dst_crs=target_crs,
-        shape=target_shape,
-        transform=target_transform,
-    )
+    # Horn's method: Sobel / 8.
+    # Rows run north -> south. Aspect is the downslope compass bearing
+    # (0 = N, 90 = E); it is 0 on flat ground, where slope is 0.
+    res = data.odc.geobox.resolution
+    z = data_dem["elevation"].values
+    dz_dx = sobel(z, axis=1) / (8 * abs(res.x))
+    dz_drow = sobel(z, axis=0) / (8 * abs(res.y))
+    dims = data_dem["elevation"].dims
+    data_dem["slope"] = (dims, np.degrees(np.arctan(np.hypot(dz_dx, dz_drow))))
+    data_dem["aspect"] = (dims, np.degrees(np.arctan2(-dz_dx, dz_drow)) % 360)
+    # 9x9 window, ~10m resolution = ~90m² footprint
     data_dem["elevation_std"] = (
-        data_dem["elevation"].rolling(x=3, y=3, center=True).std()
+        data_dem["elevation"].rolling(x=9, y=9, center=True).std()
     )
 
     # Sentinel-1 radar
@@ -224,7 +200,7 @@ def load_data(
             items_s1,
             like=data,
             chunks=chunks,
-            bands=["mean_vv", "mean_vh"],
+            bands=S1_BANDS,
         ).squeeze("time")
         data_s1["mean_vv_vh"] = safe_divide(data_s1["mean_vv"], data_s1["mean_vh"])
         data_s1 = data_s1.rio.write_crs(data.rio.crs)

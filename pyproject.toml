@@ -22,6 +22,7 @@ dependencies = [
     "xarray>=2026.9.0",
     "folium>=0.20,<0.21",
     "mapclassify>=2.11,<3",
+    "scipy>=1.18,<2",
 ]
 
 [dependency-groups]

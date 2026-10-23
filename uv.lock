@@ -1600,6 +1600,7 @@ dependencies = [
     { name = "rasterio" },
     { name = "rioxarray" },
     { name = "scikit-learn" },
+    { name = "scipy" },
     { name = "shapely" },
     { name = "xarray" },
 ]
@@ -1630,6 +1631,7 @@ requires-dist = [
     { name = "rasterio", specifier = ">=1.5,<2" },
     { name = "rioxarray", specifier = ">=0.23,<0.24" },
     { name = "scikit-learn", specifier = ">=1.9,<2" },
+    { name = "scipy", specifier = ">=1.18,<2" },
     { name = "shapely", specifier = ">=2.2,<3" },
     { name = "xarray", specifier = ">=2026.9.0" },
 ]
