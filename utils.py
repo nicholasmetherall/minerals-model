@@ -166,13 +166,20 @@ def load_data(
     # Horn's method: Sobel / 8.
     # Rows run north -> south. Aspect is the downslope compass bearing
     # (0 = N, 90 = E); it is 0 on flat ground, where slope is 0.
+    # Lazy: map_overlap shares a 1-pixel halo between dask chunks.
     res = data_s2.odc.geobox.resolution
-    z = data_dem["elevation"].values
-    dz_dx = sobel(z, axis=1) / (8 * abs(res.x))
-    dz_drow = sobel(z, axis=0) / (8 * abs(res.y))
-    dims = data_dem["elevation"].dims
-    data_dem["slope"] = (dims, np.degrees(np.arctan(np.hypot(dz_dx, dz_drow))))
-    data_dem["aspect"] = (dims, np.degrees(np.arctan2(-dz_dx, dz_drow)) % 360)
+    elev = data_dem["elevation"]
+
+    def gradient(axis, cell_size):
+        g = elev.data.map_overlap(
+            sobel, depth=1, boundary="reflect", axis=axis, dtype=elev.dtype
+        )
+        return elev.copy(data=g) / (8 * cell_size)
+
+    dz_dx = gradient(1, abs(res.x))
+    dz_drow = gradient(0, abs(res.y))
+    data_dem["slope"] = np.degrees(np.arctan(np.hypot(dz_dx, dz_drow)))
+    data_dem["aspect"] = np.degrees(np.arctan2(-dz_dx, dz_drow)) % 360
     # 9x9 window, ~10m resolution = ~90m² footprint
     data_dem["elevation_std"] = (
         data_dem["elevation"].rolling(x=9, y=9, center=True).std()
