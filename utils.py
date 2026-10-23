@@ -35,23 +35,19 @@ def load_data(
     year: str = "2022",
 ) -> xr.Dataset:
     if chunks is None:
-        chunks = {"x": 2048, "y": 2048}
+        chunks = CHUNKS
     dep_client = Client.open(DEP_CATALOG)
     collection = "dep_s2_geomad"
 
-    # 1) Fetch all matching Sentinel-2 items
-    items = []
-    for item in dep_client.search(collections=[collection], bbox=bbox).items():
-        dt = (
-            item.properties.get("datetime")
-            or item.properties.get("start_datetime")
-            or ""
-        )
-        if str(year) in item.id or str(year) in str(dt):
-            items.append(item)
+    # Search for DEP Sentinel-2 geomad items matching the given bbox and year
+    items = dep_client.search(
+        collections=[collection], bbox=bbox, datetime=str(year)
+    ).items()
 
     if not items:
-        raise ValueError(f"No Sentinel-2 assets found for year={year} in bbox={bbox}")
+        raise ValueError(
+            f"No Sentinel-2 assets found for year={year}, datetime={DATETIME}, in bbox={bbox}"
+        )
 
     bands = [
         "blue",
