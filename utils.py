@@ -1,5 +1,3 @@
-import os
-
 import dask.array as da
 import geopandas as gpd
 import joblib
@@ -112,8 +110,8 @@ def add_indices(data: xr.Dataset) -> xr.Dataset:
 # TODO: Search/load will break over the antimeridian. We are only doing one side of it for now
 def load_data(
     bbox: tuple[float, float, float, float],
+    year: str,
     chunks: dict | None = None,
-    year: str = "2022",
 ) -> xr.Dataset:
 
     if chunks is None:
@@ -128,7 +126,7 @@ def load_data(
 
     if not items:
         raise ValueError(
-            f"No Sentinel-2 assets found for year={year}, datetime={DATETIME}, in bbox={bbox} for {S2_COLLECTION} from {DEP_CATALOG}"
+            f"No Sentinel-2 assets found for year={year}, in bbox={bbox} for {S2_COLLECTION} from {DEP_CATALOG}"
         )
 
     data = load(
@@ -141,9 +139,6 @@ def load_data(
     data = add_indices(data)
 
     # DEM from Planetary Computer
-    os.environ["PC_SDK_SUBSCRIPTION_KEY"] = (
-        "84162f5502174b1b838239e74a44898d"  # TODO: is this sensitive? Move to config or secret
-    )
     mspc_client = Client.open(MSPC_CATALOG)
 
     items_dem = list(
