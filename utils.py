@@ -3,35 +3,41 @@ import os
 import dask.array as da
 import joblib
 import numpy as np
+import rioxarray  # noqa: F401
 import xarray as xr
 from dask_ml.wrappers import ParallelPostFit
-from datacube.utils.geometry import assign_crs
+from odc.geo.xr import assign_crs
 from odc.stac import load
-from pystac_client import Client
 from planetary_computer import sign_url
-import rioxarray
+from pystac_client import Client
 
-DEP_CATALOG = "https://stac.digitalearthpacific.org"
+DEP_CATALOG = "https://stac.digitalearthpacific.org"  # Staging or prod?
 MSPC_CATALOG = "https://planetarycomputer.microsoft.com/api/stac/v1/"
 
 
+# TODO: Why is this needed?
 def safe_divide(num, den, eps=1e-6):
     return xr.where(abs(den) > eps, num / den, 0.0)
 
 
 def load_data(
     bbox: tuple[float, float, float, float],
-    chunks: dict = {"x": 2048, "y": 2048},
-    resolution: int = 10,
+    chunks: dict | None = None,
     year: str = "2022",
 ) -> xr.Dataset:
+    if chunks is None:
+        chunks = {"x": 2048, "y": 2048}
     dep_client = Client.open(DEP_CATALOG)
     collection = "dep_s2_geomad"
 
     # 1) Fetch all matching Sentinel-2 items
     items = []
     for item in dep_client.search(collections=[collection], bbox=bbox).items():
-        dt = item.properties.get("datetime") or item.properties.get("start_datetime") or ""
+        dt = (
+            item.properties.get("datetime")
+            or item.properties.get("start_datetime")
+            or ""
+        )
         if str(year) in item.id or str(year) in str(dt):
             items.append(item)
 
@@ -39,21 +45,32 @@ def load_data(
         raise ValueError(f"No Sentinel-2 assets found for year={year} in bbox={bbox}")
 
     bands = [
-        "blue", "green", "red", "rededge1", "rededge2", "rededge3",
-        "nir", "swir16", "swir22", "emad", "bcmad", "smad",
+        "blue",
+        "green",
+        "red",
+        "rededge1",
+        "rededge2",
+        "rededge3",
+        "nir",
+        "swir16",
+        "swir22",
+        "emad",
+        "bcmad",
+        "smad",
     ]
 
     data = load(
         items,
         bbox=bbox,
         measurements=bands,
-        resolution=resolution,
         chunks=chunks,
     ).squeeze("time")
 
     # 2) Spectral indices with safe division
     data["ndvi"] = safe_divide(data["nir"] - data["red"], data["nir"] + data["red"])
-    data["mndwi"] = safe_divide(data["green"] - data["swir22"], data["green"] + data["swir22"])
+    data["mndwi"] = safe_divide(
+        data["green"] - data["swir22"], data["green"] + data["swir22"]
+    )
     data["evi"] = safe_divide(
         2.5 * (data["nir"] - data["red"]),
         data["nir"] + 6 * data["red"] - 7.5 * data["blue"] + 1.0,
@@ -66,16 +83,26 @@ def load_data(
         (data["swir16"] + data["red"]) - (data["nir"] + data["blue"]),
         (data["swir16"] + data["red"]) + (data["nir"] + data["blue"]),
     )
-    data["ndmi"] = safe_divide(data["nir"] - data["swir16"], data["nir"] + data["swir16"])
-    data["ndbi"] = safe_divide(data["rededge2"] - data["rededge1"], data["rededge2"] + data["rededge1"])
+    data["ndmi"] = safe_divide(
+        data["nir"] - data["swir16"], data["nir"] + data["swir16"]
+    )
+    data["ndbi"] = safe_divide(
+        data["rededge2"] - data["rededge1"], data["rededge2"] + data["rededge1"]
+    )
     data["ndwi"] = safe_divide(data["green"] - data["nir"], data["green"] + data["nir"])
-    data["ndre"] = safe_divide(data["nir"] - data["rededge1"], data["nir"] + data["rededge1"])
+    data["ndre"] = safe_divide(
+        data["nir"] - data["rededge1"], data["nir"] + data["rededge1"]
+    )
 
     # 3) DEM from Planetary Computer
-    os.environ["PC_SDK_SUBSCRIPTION_KEY"] = "84162f5502174b1b838239e74a44898d"
+    os.environ["PC_SDK_SUBSCRIPTION_KEY"] = (
+        "84162f5502174b1b838239e74a44898d"  # TODO: is this sensitive? Move to config or secret
+    )
     mspc_client = Client.open(MSPC_CATALOG)
 
-    items_dem = list(mspc_client.search(collections=["cop-dem-glo-30"], bbox=bbox).items())
+    items_dem = list(
+        mspc_client.search(collections=["cop-dem-glo-30"], bbox=bbox).items()
+    )
     if not items_dem:
         raise ValueError(f"No DEM items found for bbox={bbox}")
 
@@ -88,9 +115,8 @@ def load_data(
     )
 
     data_dem = (
-        data_dem.where(data_dem != -32768)
-        .rename({"data": "elevation"})
-        .squeeze("time")
+        # TODO: What is this value?
+        data_dem.where(data_dem != -32768).rename({"data": "elevation"}).squeeze("time")
     )
 
     # Ensure CRS exists and align to the main data grid
@@ -99,7 +125,11 @@ def load_data(
 
     # 4) DEM terrain metrics
     elevation = data_dem["elevation"].where(np.isfinite(data_dem["elevation"]), np.nan)
-    elevation_metric = elevation.rio.write_crs(data_dem["elevation"].rio.crs).rio.reproject("EPSG:32760", resolution=30)
+    elevation_metric = elevation.rio.write_crs(
+        data_dem["elevation"].rio.crs
+    ).rio.reproject(
+        "EPSG:32760", resolution=30
+    )  # TODO: Be very careful reprojecting and resampling. Instead load "like" geomad
     elevation_metric = elevation_metric.where(np.isfinite(elevation_metric), np.nan)
 
     dy_grad, dx_grad = np.gradient(elevation_metric.values, 30.0, 30.0)
@@ -133,12 +163,18 @@ def load_data(
         shape=target_shape,
         transform=target_transform,
     )
-    data_dem["elevation_std"] = data_dem["elevation"].rolling(x=3, y=3, center=True).std()
+    data_dem["elevation_std"] = (
+        data_dem["elevation"].rolling(x=3, y=3, center=True).std()
+    )
 
     # 5) Sentinel-1 radar
     items_s1 = []
     for item in dep_client.search(collections=["dep_s1_geomad"], bbox=bbox).items():
-        dt = item.properties.get("datetime") or item.properties.get("start_datetime") or ""
+        dt = (
+            item.properties.get("datetime")
+            or item.properties.get("start_datetime")
+            or ""
+        )
         if str(year) in item.id or str(year) in str(dt):
             items_s1.append(item)
 
@@ -168,7 +204,9 @@ def load_data(
     return merged
 
 
-def predict_xr(model, input_xr, chunk_size=None, persist=False, proba=False, clean=False):
+def predict_xr(
+    model, input_xr, chunk_size=None, persist=False, proba=False, clean=False
+):
     if not bool(input_xr.chunks):
         input_xr = input_xr.chunk({"x": len(input_xr.x), "y": len(input_xr.y)})
 
@@ -202,9 +240,7 @@ def predict_xr(model, input_xr, chunk_size=None, persist=False, proba=False, cle
 
         out_class = out_class.reshape(len(y), len(x))
         output_xr = xr.DataArray(
-            out_class,
-            coords={"x": x, "y": y},
-            dims=["y", "x"]
+            out_class, coords={"x": x, "y": y}, dims=["y", "x"]
         ).to_dataset(name="predictions")
 
         if proba:
@@ -217,21 +253,21 @@ def predict_xr(model, input_xr, chunk_size=None, persist=False, proba=False, cle
 
             out_proba = out_proba.reshape(len(y), len(x))
             output_xr["probabilities"] = xr.DataArray(
-                out_proba,
-                coords={"x": x, "y": y},
-                dims=["y", "x"]
+                out_proba, coords={"x": x, "y": y}, dims=["y", "x"]
             )
 
         return assign_crs(output_xr, str(crs))
 
+    # TODO: try/except overkill
     try:
         # this will work if a Dask client exists in the notebook
         from dask.distributed import Client
+
         Client.current()
         model = ParallelPostFit(model)
         with joblib.parallel_backend("dask"):
             output_xr = _predict_func(model, input_xr, persist, proba, clean)
-    except Exception:
+    except Exception:  # noqa: BLE001 # TODO: Handle specific exceptions more gracefully
         # fall back to plain local execution
         output_xr = _predict_func(model, input_xr, persist, proba, clean).compute()
 
