@@ -23,6 +23,21 @@ BBOX = [178.1, -17.8, 178.3, -17.6]  # Subset of Fiji for dev
 BBOX_GEOMETRY = geometry.box(*BBOX)
 BBOX_GDF = gpd.GeoDataFrame({"geometry": [BBOX_GEOMETRY]}, crs="EPSG:4326")
 
+S2_BANDS = [
+    "blue",
+    "green",
+    "red",
+    "rededge1",
+    "rededge2",
+    "rededge3",
+    "nir",
+    "swir16",
+    "swir22",
+    "emad",
+    "bcmad",
+    "smad",
+]
+
 
 # TODO: Why is this needed?
 def safe_divide(num, den, eps=1e-6):
@@ -49,25 +64,10 @@ def load_data(
             f"No Sentinel-2 assets found for year={year}, datetime={DATETIME}, in bbox={bbox}"
         )
 
-    bands = [
-        "blue",
-        "green",
-        "red",
-        "rededge1",
-        "rededge2",
-        "rededge3",
-        "nir",
-        "swir16",
-        "swir22",
-        "emad",
-        "bcmad",
-        "smad",
-    ]
-
     data = load(
         items,
         bbox=bbox,
-        measurements=bands,
+        measurements=S2_BANDS,
         chunks=chunks,
     ).squeeze("time")
 
