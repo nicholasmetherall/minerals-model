@@ -1,6 +1,5 @@
 import dask.array as da
 import geopandas as gpd
-import joblib
 import numpy as np
 import xarray as xr
 from dask_ml.wrappers import ParallelPostFit
@@ -217,6 +216,7 @@ def load_data(
 def predict_xr(
     model, input_xr, chunk_size=None, persist=False, proba=False, clean=False
 ):
+    # TODO: Simplify chunks stuff
     if not bool(input_xr.chunks):
         input_xr = input_xr.chunk({"x": len(input_xr.x), "y": len(input_xr.y)})
 
@@ -268,17 +268,5 @@ def predict_xr(
 
         return assign_crs(output_xr, crs)
 
-    # TODO: try/except overkill
-    try:
-        # this will work if a Dask client exists in the notebook
-        from dask.distributed import Client
-
-        Client.current()
-        model = ParallelPostFit(model)
-        with joblib.parallel_backend("dask"):
-            output_xr = _predict_func(model, input_xr, persist, proba, clean)
-    except Exception:  # noqa: BLE001 # TODO: Handle specific exceptions more gracefully
-        # fall back to plain local execution
-        output_xr = _predict_func(model, input_xr, persist, proba, clean).compute()
-
-    return output_xr
+    # Lazy, block-wise predict. Uses a Dask client if one exists, else local threads.
+    return _predict_func(ParallelPostFit(model), input_xr, persist, proba, clean)
