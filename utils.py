@@ -2,7 +2,6 @@ import dask.array as da
 import geopandas as gpd
 import joblib
 import numpy as np
-import rioxarray  # noqa: F401
 import xarray as xr
 from dask_ml.wrappers import ParallelPostFit
 from odc.geo.xr import assign_crs
@@ -226,7 +225,7 @@ def predict_xr(
 
     x = input_xr.x
     y = input_xr.y
-    crs = input_xr.rio.crs
+    crs = input_xr.odc.crs
 
     def _predict_func(model, input_xr, persist, proba, clean):
         input_data = [input_xr[var_name] for var_name in input_xr.data_vars]
@@ -267,7 +266,7 @@ def predict_xr(
                 out_proba, coords={"x": x, "y": y}, dims=["y", "x"]
             )
 
-        return assign_crs(output_xr, str(crs))
+        return assign_crs(output_xr, crs)
 
     # TODO: try/except overkill
     try:

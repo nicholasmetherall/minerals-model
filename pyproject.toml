@@ -16,7 +16,6 @@ dependencies = [
     "pystac>=1.15,<2",
     "pystac-client>=0.9.1,<0.10",
     "rasterio>=1.5,<2",
-    "rioxarray>=0.23,<0.24",
     "scikit-learn>=1.9,<2",
     "shapely>=2.2,<3",
     "xarray>=2026.9.0",
