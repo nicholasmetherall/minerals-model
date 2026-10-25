@@ -1,14 +1,13 @@
-import dask.array as da
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import xarray as xr
-from dask_ml.wrappers import ParallelPostFit
-from odc.geo.xr import assign_crs
 from odc.stac import load
 from planetary_computer import sign_url
 from pystac_client import Client
 from scipy.ndimage import sobel
 from shapely import geometry
+from sklearn.ensemble import RandomForestClassifier
 
 DEP_CATALOG = "https://stac.digitalearthpacific.org"  # Staging or prod?
 S2_COLLECTION = "dep_s2_geomad"
@@ -246,71 +245,41 @@ def load_data(
     ).squeeze("time")
     data_s1["mean_vv_vh"] = safe_divide(data_s1["mean_vv"], data_s1["mean_vh"])
 
-    # Merge all feature layers
     merged = xr.merge([data_s2, data_dem, data_s1], compat="override")
-    # Keep only pixels where every band is finite - too aggressive
-    # valid_mask = xr.concat(
-    #     [merged[var].notnull() for var in merged.data_vars], dim="var"
-    # ).all("var")
-    # merged = merged.where(valid_mask)
 
     return merged
 
 
-def predict_xr(
-    model, input_xr, chunk_size=None, persist=False, proba=False, clean=False
-):
-    # TODO: Simplify chunks stuff
-    if not bool(input_xr.chunks):
-        input_xr = input_xr.chunk({"x": len(input_xr.x), "y": len(input_xr.y)})
+def predict(model: RandomForestClassifier, ds: xr.Dataset) -> xr.Dataset:
+    """Classify every pixel of ``ds``, lazily and block by block.
 
-    if chunk_size is None:
-        chunk_size = int(input_xr.chunks["x"][0]) * int(input_xr.chunks["y"][0])
+    Features are taken from ``ds`` by ``model.feature_names_in_`` (name and order).
+    Returns ``lulc`` (int8 class code, 0 = nodata) and ``probabilities``
+    (winning class probability, %). NaN features are passed to the model, which
+    handles them natively; only pixels where every feature is NaN are nodata.
+    """
+    names = list(model.feature_names_in_)
 
-    x = input_xr.x
-    y = input_xr.y
-    crs = input_xr.odc.crs
+    def classify(x):  # numpy block (..., feature)
+        flat = x.reshape(-1, x.shape[-1])
+        flat = np.where(np.isfinite(flat), flat, np.nan)  # sklearn rejects inf
+        valid = ~np.isnan(flat).all(axis=1)
+        lulc = np.zeros(len(flat), "int8")
+        prob = np.zeros(len(flat), "float32")
+        if valid.any():
+            # One pass: predict() is argmax of predict_proba() anyway
+            p = model.predict_proba(pd.DataFrame(flat[valid], columns=names))
+            lulc[valid] = model.classes_[p.argmax(axis=1)]
+            prob[valid] = p.max(axis=1) * 100
+        return lulc.reshape(x.shape[:-1]), prob.reshape(x.shape[:-1])
 
-    def _predict_func(model, input_xr, persist, proba, clean):
-        input_data = [input_xr[var_name] for var_name in input_xr.data_vars]
-
-        flat = []
-        for arr in input_data:
-            flat.append(arr.data.flatten().rechunk(chunk_size))
-
-        features = da.stack(flat, axis=1)
-
-        if clean:
-            features = da.where(da.isfinite(features), features, 0)
-
-        if proba and persist:
-            features = features.persist()
-
-        print("predicting...")
-        out_class = model.predict(features)
-
-        if clean:
-            out_class = da.where(da.isfinite(out_class), out_class, 0)
-
-        out_class = out_class.reshape(len(y), len(x))
-        output_xr = xr.DataArray(
-            out_class, coords={"x": x, "y": y}, dims=["y", "x"]
-        ).to_dataset(name="predictions")
-
-        if proba:
-            print("   probabilities...")
-            out_proba = model.predict_proba(features)
-            out_proba = da.max(out_proba, axis=1) * 100.0
-
-            if clean:
-                out_proba = da.where(da.isfinite(out_proba), out_proba, 0)
-
-            out_proba = out_proba.reshape(len(y), len(x))
-            output_xr["probabilities"] = xr.DataArray(
-                out_proba, coords={"x": x, "y": y}, dims=["y", "x"]
-            )
-
-        return assign_crs(output_xr, crs)
-
-    # Lazy, block-wise predict. Uses a Dask client if one exists, else local threads.
-    return _predict_func(ParallelPostFit(model), input_xr, persist, proba, clean)
+    lulc, prob = xr.apply_ufunc(
+        classify,
+        ds[names].to_dataarray("feature").chunk(feature=-1),
+        input_core_dims=[["feature"]],
+        output_core_dims=[[], []],
+        dask="parallelized",
+        output_dtypes=["int8", "float32"],
+    )
+    lulc.attrs["nodata"] = 0
+    return xr.Dataset({"lulc": lulc, "probabilities": prob})
