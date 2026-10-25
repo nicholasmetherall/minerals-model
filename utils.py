@@ -18,8 +18,14 @@ MSPC_CATALOG = "https://planetarycomputer.microsoft.com/api/stac/v1/"
 
 CHUNKS = {"x": 2048, "y": 2048}
 DATETIME = "2022"
-# BBOX = [177.14, -18.41, 179.99, -16.0]  # Fiji
-BBOX = [178.1, -17.8, 178.3, -17.6]  # Subset of Fiji for dev
+# BBOX: tuple[float, float, float, float] = (177.14, -18.41, 179.99, -16.0)  # Fiji
+BBOX: tuple[float, float, float, float] = (
+    178.06,
+    -17.91,
+    178.56,
+    -17.62,
+)  # Subset of Fiji for dev
+
 BBOX_GEOMETRY = geometry.box(*BBOX)
 BBOX_GDF = gpd.GeoDataFrame({"geometry": [BBOX_GEOMETRY]}, crs="EPSG:4326")
 
@@ -38,12 +44,34 @@ S2_BANDS = [
     "smad",
 ]
 
+# DEP S2 geomad uint16 -> surface reflectance (from STAC raster:bands)
+S2_SCALE = 0.0001
+S2_OFFSET = 0.0
+S2_NODATA = 0
+
 S1_BANDS = [
     "mean_vv",
     "mean_vh",
 ]
 
 
+# TODO: Check which training data to use training_data/MRD_dissagregated_32.geojson?
+training_file = "training_data/mred-tdata.geojson"
+training_data = gpd.read_file(training_file, bbox=BBOX_GEOMETRY, columns=["lulc_code"])
+
+classes = [
+    [1, "bare_land", "#968640"],
+    [2, "forest", "#064a00"],
+    [3, "crops", "#ffce33"],
+    [4, "grassland", "#d7ffa0"],
+    [5, "settlements", "#b3b2ae"],
+    [6, "mangroves", "#07b28d"],
+    [7, "water", "#71a8ff"],
+    [8, "quarry", "#b03a2e"],
+]
+
+
+# TODO: Check safe_divide
 def safe_divide(num, den):
     """Return ``num / den`` as float, ``NaN`` where ``den`` is 0 or the result is not finite.
 
@@ -62,46 +90,58 @@ def add_indices(ds: xr.Dataset) -> xr.Dataset:
       reflectance scaled by 10,000 (scale 0.0001, offset 0); nodata is ``0``.
     - emad, smad, bcmad: ``float32``; nodata is ``NaN``. Not used here.
 
-    Indices are computed on the raw scaled ``uint16`` values, not reflectance:
-
-    - TODO: Differences wrap around where the second band is larger (e.g.
-      ``nir - red`` over water gives ~65,535 instead of a small negative).
-    - EVI and SAVI constants (L, C1, C2) assume 0-1 reflectance.
-    - Nodata pixels (all bands ``0``) give ``0 / 0``, which ``safe_divide``
-      returns as ``NaN``.
+    Bands are converted to reflectance first: nodata -> ``NaN``, scaled by
+    ``S2_SCALE`` + ``S2_OFFSET``, then clipped to 0-1. This avoids ``uint16``
+    wraparound, keeps EVI/SAVI constants valid, and bounds normalised
+    differences to -1..1. The raw bands in ``ds`` are left unchanged.
 
     Returns the same dataset with indices added as new variables.
     """
+    r = {
+        b: (ds[b].where(ds[b] != S2_NODATA) * S2_SCALE + S2_OFFSET).clip(0, 1)
+        for b in [
+            "blue",
+            "green",
+            "red",
+            "rededge1",
+            "rededge2",
+            "nir",
+            "swir16",
+            "swir22",
+        ]
+    }
+
     # Normalised Difference Vegetation Index
-    ds["ndvi"] = safe_divide(ds["nir"] - ds["red"], ds["nir"] + ds["red"])
+    ds["ndvi"] = safe_divide(r["nir"] - r["red"], r["nir"] + r["red"])
     # Modified Normalised Difference Water Index (standard uses swir16, not swir22)
-    ds["mndwi"] = safe_divide(ds["green"] - ds["swir22"], ds["green"] + ds["swir22"])
-    # Enhanced Vegetation Index
+    ds["mndwi"] = safe_divide(r["green"] - r["swir22"], r["green"] + r["swir22"])
+    # Enhanced Vegetation Index. Denominator can approach 0 where blue is high
+    # (e.g. bright/hazy pixels), so clip to the meaningful range.
     ds["evi"] = safe_divide(
-        2.5 * (ds["nir"] - ds["red"]),
-        ds["nir"] + 6 * ds["red"] - 7.5 * ds["blue"] + 1.0,
-    )
+        2.5 * (r["nir"] - r["red"]),
+        r["nir"] + 6 * r["red"] - 7.5 * r["blue"] + 1.0,
+    ).clip(-1, 1)
     # Soil Adjusted Vegetation Index (L = 0.5)
     ds["savi"] = safe_divide(
-        (1 + 0.5) * (ds["nir"] - ds["red"]),
-        ds["nir"] + ds["red"] + 0.5,
+        (1 + 0.5) * (r["nir"] - r["red"]),
+        r["nir"] + r["red"] + 0.5,
     )
     # Bare Soil Index
     ds["bsi"] = safe_divide(
-        (ds["swir16"] + ds["red"]) - (ds["nir"] + ds["blue"]),
-        (ds["swir16"] + ds["red"]) + (ds["nir"] + ds["blue"]),
+        (r["swir16"] + r["red"]) - (r["nir"] + r["blue"]),
+        (r["swir16"] + r["red"]) + (r["nir"] + r["blue"]),
     )
     # Normalised Difference Moisture Index
-    ds["ndmi"] = safe_divide(ds["nir"] - ds["swir16"], ds["nir"] + ds["swir16"])
+    ds["ndmi"] = safe_divide(r["nir"] - r["swir16"], r["nir"] + r["swir16"])
     # Labelled Normalised Difference Built-up Index, but computed from red-edge
     # bands; true NDBI is (swir16 - nir) / (swir16 + nir), which equals -NDMI
     ds["ndbi"] = safe_divide(
-        ds["rededge2"] - ds["rededge1"], ds["rededge2"] + ds["rededge1"]
+        r["rededge2"] - r["rededge1"], r["rededge2"] + r["rededge1"]
     )
     # Normalised Difference Water Index (McFeeters)
-    ds["ndwi"] = safe_divide(ds["green"] - ds["nir"], ds["green"] + ds["nir"])
+    ds["ndwi"] = safe_divide(r["green"] - r["nir"], r["green"] + r["nir"])
     # Normalised Difference Red Edge index
-    ds["ndre"] = safe_divide(ds["nir"] - ds["rededge1"], ds["nir"] + ds["rededge1"])
+    ds["ndre"] = safe_divide(r["nir"] - r["rededge1"], r["nir"] + r["rededge1"])
     return ds
 
 
@@ -162,8 +202,10 @@ def load_data(
     )
 
     # Horn's method: Sobel / 8.
-    # Rows run north -> south. Aspect is the downslope compass bearing
-    # (0 = N, 90 = E); it is 0 on flat ground, where slope is 0.
+    # Rows run north -> south. Northness/eastness are cos/sin of aspect (the
+    # downslope compass bearing): northness 1 = north-facing, -1 = south;
+    # eastness 1 = east-facing, -1 = west; both 0 on flat ground.
+    # Avoids the 0/360 wrap of raw aspect.
     # Lazy: map_overlap shares a 1-pixel halo between dask chunks.
     res = data_s2.odc.geobox.resolution
     elev = data_dem["elevation"]
@@ -176,8 +218,10 @@ def load_data(
 
     dz_dx = gradient(1, abs(res.x))
     dz_drow = gradient(0, abs(res.y))
-    data_dem["slope"] = np.degrees(np.arctan(np.hypot(dz_dx, dz_drow)))
-    data_dem["aspect"] = np.degrees(np.arctan2(-dz_dx, dz_drow)) % 360
+    grad = np.hypot(dz_dx, dz_drow)
+    data_dem["slope"] = np.degrees(np.arctan(grad))
+    data_dem["northness"] = (dz_drow / grad.where(grad > 0)).fillna(0)
+    data_dem["eastness"] = (-dz_dx / grad.where(grad > 0)).fillna(0)
     # 9x9 window, ~10m resolution = ~90m² footprint
     data_dem["elevation_std"] = (
         data_dem["elevation"].rolling(x=9, y=9, center=True).std()
