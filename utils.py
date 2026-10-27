@@ -1,7 +1,11 @@
+from functools import cache
+
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import xarray as xr
+from odc.geo.geom import box
+from odc.geo.xr import crop
 from odc.stac import load
 from planetary_computer import sign_url
 from pystac_client import Client
@@ -9,21 +13,28 @@ from scipy.ndimage import sobel
 from shapely import geometry
 from sklearn.ensemble import RandomForestClassifier
 
+MODE = "traditional"
+# MODE = "embeddings"
+
 DEP_CATALOG = "https://stac.digitalearthpacific.org"  # Staging or prod?
 S2_COLLECTION = "dep_s2_geomad"
 S1_COLLECTION = "dep_s1_geomad"
 DEM_COLLECTION = "cop-dem-glo-30"
 MSPC_CATALOG = "https://planetarycomputer.microsoft.com/api/stac/v1/"
+# OlmoEarth v1.3 embeddings: 128 int8 bands, 10m, one zarr group per UTM zone, years 2017-2025
+OLMOEARTH_URL = "s3://olmoearth/olmoearth-v1-3-embeddings/embeddings.zarr"
+OLMOEARTH_NODATA = -128
 
 CHUNKS = {"x": 2048, "y": 2048}
 DATETIME = "2022"
-# BBOX: tuple[float, float, float, float] = (177.14, -18.41, 179.99, -16.0)  # Fiji
-BBOX: tuple[float, float, float, float] = (
-    178.06,
-    -17.91,
-    178.56,
-    -17.62,
-)  # Subset of Fiji for dev
+# TODO: Limit to land. There's no mining in the sea.
+BBOX: tuple[float, float, float, float] = (177.14, -18.41, 179.90, -16.0)  # Fiji
+# BBOX: tuple[float, float, float, float] = (
+#     178.30,
+#     -18.13,
+#     178.53,
+#     -17.92,
+# )  # Subset of Fiji for dev
 
 BBOX_GEOMETRY = geometry.box(*BBOX)
 BBOX_GDF = gpd.GeoDataFrame({"geometry": [BBOX_GEOMETRY]}, crs="EPSG:4326")
@@ -250,6 +261,77 @@ def load_data(
     return merged
 
 
+@cache
+def open_olmoearth(zone: int) -> xr.DataArray:
+    """Open one UTM zone of OlmoEarth v1.3 embeddings, once per session.
+
+    Consolidated metadata: one request. ``chunks=None``: lazy, without a dask
+    graph over the whole zone.
+    """
+    ds = xr.open_zarr(
+        OLMOEARTH_URL,
+        group=f"utm{zone:02d}",
+        storage_options={"anon": True, "endpoint_url": "https://data.source.coop"},
+        chunks=None,
+        zarr_format=3,
+        consolidated=True,
+    )
+    return ds["embeddings"].odc.assign_crs(ds.attrs["proj:code"])
+
+
+def load_embeddings(
+    bbox: tuple[float, float, float, float],
+    year: str,
+    chunks: dict | None = None,
+) -> xr.Dataset:
+    """OlmoEarth embeddings for ``bbox`` and ``year``: an alternative to ``load_data``.
+
+    Lazy. Variables ``emb_00``-``emb_63``: bands 0-63, a complete 64-d
+    (Matryoshka) embedding at half the download of all 128. Values are left
+    quantized (RF splits are unaffected by the monotonic de-quantization);
+    nodata (-128) -> NaN. On the native 10 m UTM grid of the bbox centre's zone,
+    so no reprojection (and not the geomad grid).
+    """
+    if chunks is None:
+        chunks = CHUNKS
+
+    # TODO: a bbox spanning UTM zones (e.g. across the antimeridian) needs one read per zone
+    zone = int(((bbox[0] + bbox[2]) / 2 + 180) // 6) + 1
+    emb = open_olmoearth(zone).sel(time=int(year)).isel(band=slice(0, 64))
+    # Crop before chunking: dask only ever sees the bbox, not the zone
+    emb = crop(emb, box(*bbox, crs="EPSG:4326"), apply_mask=False).chunk(
+        band=-1, **chunks
+    )
+    emb = emb.where(emb != OLMOEARTH_NODATA).astype("float32")
+    emb = emb.assign_coords(band=[f"emb_{b:02d}" for b in emb.band.values])
+    return emb.to_dataset("band").drop_vars("time")
+
+
+def sample_embeddings(points: gpd.GeoDataFrame, year: str) -> pd.DataFrame:
+    """OlmoEarth embeddings at ``points`` (nearest pixel), same columns as ``load_embeddings``.
+
+    Reads only the store's 256 x 256 blocks under the points, without dask:
+    much faster than sampling ``load_embeddings`` (which reads whole dask chunks).
+    Index matches ``points``.
+    """
+    bounds = points.to_crs("EPSG:4326").total_bounds
+    zone = int(((bounds[0] + bounds[2]) / 2 + 180) // 6) + 1
+    emb = open_olmoearth(zone).sel(time=int(year)).isel(band=slice(0, 64))
+    xy = points.to_crs(emb.odc.crs).get_coordinates()
+    values = (
+        emb.sel(
+            x=xr.DataArray(xy.x.values, dims="point"),
+            y=xr.DataArray(xy.y.values, dims="point"),
+            method="nearest",
+        )
+        .transpose("point", "band")
+        .values
+    )
+    columns = [f"emb_{b:02d}" for b in range(values.shape[1])]
+    df = pd.DataFrame(values, index=points.index, columns=columns).astype("float32")
+    return df.mask(values == OLMOEARTH_NODATA)
+
+
 def predict(model: RandomForestClassifier, ds: xr.Dataset) -> xr.Dataset:
     """Classify every pixel of ``ds``, lazily and block by block.
 
@@ -260,7 +342,8 @@ def predict(model: RandomForestClassifier, ds: xr.Dataset) -> xr.Dataset:
     """
     names = list(model.feature_names_in_)
 
-    def classify(x):  # numpy block (..., feature)
+    # TODO: type classify func
+    def classify(x):
         flat = x.reshape(-1, x.shape[-1])
         flat = np.where(np.isfinite(flat), flat, np.nan)  # sklearn rejects inf
         valid = ~np.isnan(flat).all(axis=1)

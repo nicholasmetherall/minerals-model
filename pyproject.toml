@@ -21,6 +21,8 @@ dependencies = [
     "folium>=0.20,<0.21",
     "mapclassify>=2.11,<3",
     "scipy>=1.18,<2",
+    "zarr>=3.4.1,<4",
+    "s3fs>=2026.9.0",
 ]
 
 [dependency-groups]
