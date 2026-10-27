@@ -13,8 +13,8 @@ from scipy.ndimage import sobel
 from shapely import geometry
 from sklearn.ensemble import RandomForestClassifier
 
-MODE = "traditional"
-# MODE = "embeddings"
+# MODE = "traditional"
+MODE = "embeddings"  # TODO: Check Olmo covers 2022 so it can be compared
 
 DEP_CATALOG = "https://stac.digitalearthpacific.org"  # Staging or prod?
 S2_COLLECTION = "dep_s2_geomad"
@@ -28,13 +28,19 @@ OLMOEARTH_NODATA = -128
 CHUNKS = {"x": 2048, "y": 2048}
 DATETIME = "2022"
 # TODO: Limit to land. There's no mining in the sea.
-BBOX: tuple[float, float, float, float] = (177.14, -18.41, 179.90, -16.0)  # Fiji
+# BBOX: tuple[float, float, float, float] = (177.14, -18.41, 179.90, -16.0)  # Fiji
 # BBOX: tuple[float, float, float, float] = (
 #     178.30,
 #     -18.13,
 #     178.53,
 #     -17.92,
 # )  # Subset of Fiji for dev
+BBOX: tuple[float, float, float, float] = (
+    177.353,
+    -17.846,
+    177.610,
+    -17.676,
+)  # Subset of Fiji for dev
 
 BBOX_GEOMETRY = geometry.box(*BBOX)
 BBOX_GDF = gpd.GeoDataFrame({"geometry": [BBOX_GEOMETRY]}, crs="EPSG:4326")
