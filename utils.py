@@ -26,7 +26,7 @@ OLMOEARTH_URL = "s3://olmoearth/olmoearth-v1-3-embeddings/embeddings.zarr"
 OLMOEARTH_NODATA = -128
 
 CHUNKS = {"x": 2048, "y": 2048}
-DATETIME = "2022"
+DATETIME = "2022"  # Training data is 2022.
 # TODO: Limit to land. There's no mining in the sea.
 # BBOX: tuple[float, float, float, float] = (177.14, -18.41, 179.90, -16.0)  # Fiji
 # BBOX: tuple[float, float, float, float] = (
@@ -72,6 +72,7 @@ S1_BANDS = [
 
 
 # TODO: Check which training data to use training_data/MRD_dissagregated_32.geojson?
+# Training data is 2022
 training_file = "training_data/mred-tdata.geojson"
 training_data = gpd.read_file(training_file, bbox=BBOX_GEOMETRY, columns=["lulc_code"])
 
