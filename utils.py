@@ -135,35 +135,35 @@ def load_data(
     )
     data_dem["elevation_std"] = data_dem["elevation"].rolling(x=3, y=3, center=True).std()
 
-    # 5) Sentinel-1 radar
-    items_s1 = []
-    for item in dep_client.search(collections=["dep_s1_geomad"], bbox=bbox).items():
-        dt = item.properties.get("datetime") or item.properties.get("start_datetime") or ""
-        if str(year) in item.id or str(year) in str(dt):
-            items_s1.append(item)
+    # # 5) Sentinel-1 radar
+    # items_s1 = []
+    # for item in dep_client.search(collections=["dep_s1_geomad"], bbox=bbox).items():
+    #     dt = item.properties.get("datetime") or item.properties.get("start_datetime") or ""
+    #     if str(year) in item.id or str(year) in str(dt):
+    #         items_s1.append(item)
 
-    if items_s1:
-        data_s1 = load(
-            items_s1,
-            like=data,
-            chunks=chunks,
-            measurements=["mean_vv", "mean_vh"],
-        ).squeeze("time")
-        data_s1["mean_vv_vh"] = safe_divide(data_s1["mean_vv"], data_s1["mean_vh"])
-        data_s1 = data_s1.rio.write_crs(data.rio.crs)
-        data_s1 = data_s1.rio.reproject_match(data)
-    else:
-        data_s1 = xr.Dataset()
+    # if items_s1:
+    #     data_s1 = load(
+    #         items_s1,
+    #         like=data,
+    #         chunks=chunks,
+    #         measurements=["mean_vv", "mean_vh"],
+    #     ).squeeze("time")
+    #     data_s1["mean_vv_vh"] = safe_divide(data_s1["mean_vv"], data_s1["mean_vh"])
+    #     data_s1 = data_s1.rio.write_crs(data.rio.crs)
+    #     data_s1 = data_s1.rio.reproject_match(data)
+    # else:
+    #     data_s1 = xr.Dataset()
 
-    # 6) Merge all feature layers
-    merged = xr.merge([data, data_dem, data_s1], compat="override")
-    # merged = xr.merge([data, data_dem], compat="override")
-    # Keep only pixels where every band is finite - too aggressive
-    valid_mask = xr.concat(
-        [merged[var].notnull() for var in merged.data_vars], dim="var"
-    ).all("var")
+    # # 6) Merge all feature layers
+    # merged = xr.merge([data, data_dem, data_s1], compat="override")
+    merged = xr.merge([data, data_dem], compat="override")
+    # # Keep only pixels where every band is finite - too aggressive
+    # valid_mask = xr.concat(
+    #     [merged[var].notnull() for var in merged.data_vars], dim="var"
+    # ).all("var")
 
-    merged = merged.where(valid_mask)
+    # merged = merged.where(valid_mask)
 
     return merged
 
